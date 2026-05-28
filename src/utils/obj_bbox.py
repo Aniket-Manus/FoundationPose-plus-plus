@@ -1,3 +1,11 @@
+"""Utilities for requesting and visualizing object bounding boxes.
+
+This module provides:
+- local image rendering of xywh boxes
+- parsing Qwen2-VL style bounding-box text output
+- a thin WebAPI request helper for remote bbox prediction
+"""
+
 import re
 import cv2
 import argparse
@@ -12,6 +20,7 @@ def visualize_bbox(
         bbox_xywh: Union[List, Tuple], 
         output_path: str
 ):
+    """Draw an xywh bounding box on an RGB image and save to disk."""
     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
     if not isinstance(image, np.ndarray):
@@ -43,9 +52,7 @@ def _parse_qwen2_vl_output(
         img_H: int, 
         img_W: int,
 )->List:
-    """
-    We assume the bbox in the output_text is in the format of (x, y, x, y)
-    """
+    """Parse `(x, y, x, y)` text output and convert to pixel-space xywh."""
     pattern = r'\((\d+),\s*(\d+),\s*(\d+),\s*(\d+)\)'
     
     matches = re.findall(pattern, output_text)
@@ -70,6 +77,7 @@ def request_bbox(
         web_api_url: str,
         reference_img_path: str = None,
 ):    
+    """Request a bounding box from a WebAPI endpoint and optionally visualize it."""
     frame = np.array(Image.open(frame_path))
     img_H, img_W = frame.shape[0], frame.shape[1]
 

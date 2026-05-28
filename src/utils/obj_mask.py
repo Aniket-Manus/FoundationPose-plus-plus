@@ -1,3 +1,5 @@
+"""Utilities for mask generation through external segmentation WebAPI services."""
+
 import json
 import argparse
 import requests
@@ -10,6 +12,7 @@ def generate_mask(
         output_mask_path: str,
         web_api_url: str,
 ):
+    """Request mask generation for a frame and xywh box, then save to output path."""
     data = {
         'frame_path': frame_path,
         'bbox_xywh': bbox_xywh,

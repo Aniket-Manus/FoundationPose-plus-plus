@@ -52,16 +52,30 @@ class FoundationPose:
 
     model_pts = mesh.vertices
     self.diameter = compute_mesh_diameter(model_pts=mesh.vertices, n_sample=10000)
-    self.vox_size = max(self.diameter/20.0, 0.003)
+    #self.vox_size = max(self.diameter/20.0, 0.003)
+    self.vox_size = 0.0015
     logging.info(f'self.diameter:{self.diameter}, vox_size:{self.vox_size}')
     self.dist_bin = self.vox_size/2
     self.angle_bin = 20  # Deg
     pcd = toOpen3dCloud(model_pts, normals=model_normals)
-    pcd = pcd.voxel_down_sample(self.vox_size)
-    self.max_xyz = np.asarray(pcd.points).max(axis=0)
-    self.min_xyz = np.asarray(pcd.points).min(axis=0)
-    self.pts = torch.tensor(np.asarray(pcd.points), dtype=torch.float32, device='cuda')
-    self.normals = F.normalize(torch.tensor(np.asarray(pcd.normals), dtype=torch.float32, device='cuda'), dim=-1)
+    pcd_down = pcd.voxel_down_sample(self.vox_size)
+    
+    # ---- WORKSTATION MESH DATA MATRIX STABILIZATION ----
+    # If voxel downsampling collapses the thin geometry, fall back to the uncollapsed raw mesh vectors
+    if len(pcd_down.points) <= 10:
+        logging.info(f'\n[BLACKWELL MESH REPAIR] Voxel filter collapsed geometry down to {len(pcd_down.points)} points due to scale.')
+        logging.info(f'[BLACKWELL MESH REPAIR] Bypassing Open3D voxel downsampling filter layer...')
+        final_points = np.asarray(pcd.points)
+        final_normals = np.asarray(pcd.normals)
+    else:
+        final_points = np.asarray(pcd_down.points)
+        final_normals = np.asarray(pcd_down.normals)
+        
+    self.max_xyz = final_points.max(axis=0)
+    self.min_xyz = final_points.min(axis=0)
+    self.pts = torch.tensor(final_points, dtype=torch.float32, device='cuda')
+    self.normals = F.normalize(torch.tensor(final_normals, dtype=torch.float32, device='cuda'), dim=-1)
+    # ----------------------------------------------------
     logging.info(f'self.pts:{self.pts.shape}')
     self.mesh_path = None
     self.mesh = mesh
@@ -117,9 +131,12 @@ class FoundationPose:
 
     rot_grid = np.asarray(rot_grid)
     logging.info(f"rot_grid:{rot_grid.shape}")
-    rot_grid = mycpp.cluster_poses(30, 99999, rot_grid, self.symmetry_tfs.data.cpu().numpy())
-    rot_grid = np.asarray(rot_grid)
-    logging.info(f"after cluster, rot_grid:{rot_grid.shape}")
+    if mycpp is not None and hasattr(mycpp, 'cluster_poses'):
+      rot_grid = mycpp.cluster_poses(30, 99999, rot_grid, self.symmetry_tfs.data.cpu().numpy())
+      rot_grid = np.asarray(rot_grid)
+      logging.info(f"after cluster, rot_grid:{rot_grid.shape}")
+    else:
+      logging.warning("mycpp.cluster_poses is unavailable; using unclustered rotation grid.")
     self.rot_grid = torch.as_tensor(rot_grid, device='cuda', dtype=torch.float)
     logging.info(f"self.rot_grid: {self.rot_grid.shape}")
 

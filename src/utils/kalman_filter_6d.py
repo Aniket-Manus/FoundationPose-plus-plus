@@ -1,3 +1,18 @@
+"""Kalman filter utilities for smoothing 6-DoF object pose tracks.
+
+This module defines `KalmanFilter6D`, a constant-velocity Kalman filter over a
+12D state:
+
+    [tx, ty, tz, rx, ry, rz, v_tx, v_ty, v_tz, v_rx, v_ry, v_rz]
+
+It supports:
+- full 6D pose correction updates (translation + rotation)
+- partial x/y translation-only correction updates from 2D tracker cues
+
+The filter is used by the pose tracking pipeline to reduce frame-to-frame
+jitter and improve temporal consistency.
+"""
+
 import numpy as np
 import scipy.linalg
 
@@ -24,17 +39,21 @@ class KalmanFilter6D(object):
         ndim, dt = 6, 1.0  # 6 pose dimensions
         
         # State transition matrix (12x12)
+        # First 6 dims are pose, last 6 dims are velocities.
+        # This builds a constant-velocity model: pose_next = pose + vel * dt.
         self._motion_mat = np.eye(2 * ndim, 2 * ndim)
         for i in range(ndim):
             self._motion_mat[i, ndim + i] = dt
         # Observation matrix (6x12)
+        # Full measurement observes only pose (tx, ty, tz, rx, ry, rz).
         self._update_mat = np.eye(ndim, 2 * ndim)    # 6*12
+        # 2D tracker update observes only translation x/y.
         self._update_mat_xy = np.zeros((2, 2*ndim))  # 2*12
         # Diagonal
         self._update_mat_xy[0, 0] = 1
         self._update_mat_xy[1, 1] = 1
 
-        # 新增xy传感器噪声参数
+        # Extra noise scale for xy-only sensor corrections.
         self._std_weight_trans_xy = 1./40  # xy sensor has lower noise floor
         # Process noise parameters
         self._std_weight_trans = 1./10    # Translation uncertainty
@@ -47,6 +66,7 @@ class KalmanFilter6D(object):
     def initiate(self, measurement):
         """Initialize track with unassociated measurement (6DOF pose)"""
         mean_pos = measurement
+        # Start with zero velocity; it will be inferred over time.
         mean_vel = np.zeros_like(mean_pos)
         mean = np.r_[mean_pos, mean_vel]
         
@@ -54,7 +74,8 @@ class KalmanFilter6D(object):
         scale_xyz = max(np.linalg.norm(measurement[:3]), 1e-5)
         scale_rot = max(np.linalg.norm(measurement[3:]), 1e-5)
         
-        # 初始误差比较大
+        # Use relatively large initial covariance so the filter can adapt quickly.
+        # Initial covariance is intentionally broad so early updates can adapt quickly.
         std = [
             # Position uncertainties
             0.2 * self._std_weight_trans * scale_xyz,
@@ -77,6 +98,7 @@ class KalmanFilter6D(object):
 
     def predict(self, mean, covariance):
         """Run Kalman filter prediction step"""
+        # Use current depth/rotation magnitude to scale process noise.
         scale_xyz = mean[2]     
         scale_rot = mean[5]     
         
@@ -98,8 +120,9 @@ class KalmanFilter6D(object):
             self._std_weight_vel_rot * scale_rot,
         ]
         motion_cov = np.diag(np.square(np.r_[std_pos, std_vel]))
+        # x_k|k-1 = F x_k-1|k-1
         mean = np.dot(mean, self._motion_mat.T)
-        # accumulate the variance
+        # P_k|k-1 = F P_k-1|k-1 F^T + Q
         covariance = np.linalg.multi_dot((
             self._motion_mat, covariance, self._motion_mat.T)) + motion_cov
         
@@ -121,7 +144,7 @@ class KalmanFilter6D(object):
         ]
         innovation_cov = np.diag(np.square(std))
         
-        # Project state
+        # z_hat = H x, S = H P H^T + R
         projected_mean = np.dot(self._update_mat, mean)
         projected_cov = np.linalg.multi_dot((
             self._update_mat, covariance, self._update_mat.T)) + innovation_cov
@@ -129,6 +152,7 @@ class KalmanFilter6D(object):
         return projected_mean, projected_cov
     
     def project_for_xy(self, mean, covariance):
+        # Same as project(), but for partial x/y-only measurements.
         scale_xy = max(np.linalg.norm(mean[:2]), 1e-5)
         
         # xy sensor noise model
@@ -148,7 +172,7 @@ class KalmanFilter6D(object):
         """Kalman filter correction step"""
         projected_mean, projected_cov = self.project(mean, covariance)
         
-        # calculate kalman gain
+        # Kalman gain K = P H^T S^-1 (computed via Cholesky for stability).
         chol_factor, lower = scipy.linalg.cho_factor(
             projected_cov, lower=True, check_finite=False)
         kalman_gain = scipy.linalg.cho_solve(
@@ -156,10 +180,11 @@ class KalmanFilter6D(object):
             check_finite=False).T
         
         # Update with measurement
-        innovation = measurement - projected_mean   # 实际测量值-投影预测值，来产生修正
-        # reweight
+        # innovation = measurement residual in 6D pose space.
+        innovation = measurement - projected_mean
+        # x_k|k = x_k|k-1 + K * innovation
         new_mean = mean + np.dot(innovation, kalman_gain.T)
-        # corrected
+        # P_k|k = P_k|k-1 - K S K^T
         new_covariance = covariance - np.linalg.multi_dot((
             kalman_gain, projected_cov, kalman_gain.T))
         
@@ -167,6 +192,7 @@ class KalmanFilter6D(object):
     
     def update_from_xy(self, mean, covariance, measurement_xy):
         """Kalman filter correction step for xy"""
+        # Lightweight correction when only translation x/y cue is available.
         proj_mean, proj_cov = self.project_for_xy(mean, covariance)
         
         chol_factor, lower = scipy.linalg.cho_factor(

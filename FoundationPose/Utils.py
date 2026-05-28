@@ -44,8 +44,9 @@ except:
   kornia = None
 try:
   import mycpp.build.mycpp as mycpp
-except:
+except Exception as e:
   mycpp = None
+  logging.warning(f"Failed to import mycpp extension, falling back to Python path. Details: {e}")
 try:
   from bundlesdf.mycuda import common
 except:

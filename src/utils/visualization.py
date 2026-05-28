@@ -1,3 +1,5 @@
+"""Visualization helpers for segmentation masks and bounding boxes."""
+
 import cv2
 import numpy as np
 from PIL import Image
@@ -9,6 +11,7 @@ def visualize_mask(
         mask: np.ndarray,
         save_path: str
 ):
+    """Overlay a mask on an image with transparency and save the result."""
     # Ensure mask is in 'RGBA' mode
     mask_rgba = Image.fromarray(mask.astype(np.uint8)).convert('RGBA')
 
